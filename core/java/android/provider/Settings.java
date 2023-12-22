@@ -6668,6 +6668,14 @@ public final class Settings {
         @Readable
         public static final String RINGTONE_VIBRATION_PATTERN = "ringtone_vibration_pattern";
 
+
+        /**
+         * Whether do haptic feedback on fling scroll
+         * @hide
+         */
+        @Readable
+        public static final String HAPTIC_ON_SCROLL = "haptic_on_scroll";
+
         /**
          * Which notification Vibration Pattern to use
          * 0: default provided value
