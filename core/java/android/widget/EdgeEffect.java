@@ -26,6 +26,7 @@ import android.compat.annotation.ChangeId;
 import android.compat.annotation.EnabledSince;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.content.res.TypedArray;
 import android.graphics.BlendMode;
 import android.graphics.Canvas;
@@ -35,6 +36,9 @@ import android.graphics.RecordingCanvas;
 import android.graphics.Rect;
 import android.graphics.RenderNode;
 import android.os.Build;
+import android.os.VibrationAttributes;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.util.AttributeSet;
 import android.view.animation.AnimationUtils;
 import android.view.animation.DecelerateInterpolator;
@@ -218,6 +222,12 @@ public class EdgeEffect {
     private float mDisplacement = 0.5f;
     private float mTargetDisplacement = 0.5f;
 
+    private static final VibrationEffect FLING_EDGE_TICK =
+            VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK);
+    private static final VibrationAttributes TOUCH_VIBRATION_ATTRIBUTES =
+            VibrationAttributes.createForUsage(VibrationAttributes.USAGE_TOUCH);
+    private final Vibrator mVibrator;
+
     /**
      * Current edge effect type, consumers should always query
      * {@link #getCurrentEdgeEffectBehavior()} instead of this parameter
@@ -253,6 +263,10 @@ public class EdgeEffect {
         mPaint.setColor((themeColor & 0xffffff) | 0x33000000);
         mPaint.setStyle(Paint.Style.FILL);
         mPaint.setBlendMode(DEFAULT_BLEND_MODE);
+
+        mVibrator = context.checkSelfPermission(android.Manifest.permission.VIBRATE)
+                == PackageManager.PERMISSION_GRANTED
+                ? context.getSystemService(Vibrator.class) : null;
     }
 
     @EdgeEffectType
@@ -523,6 +537,11 @@ public class EdgeEffect {
             mTargetDisplacement = 0.5f;
         } else {
             finish();
+            return;
+        }
+
+        if (mVibrator != null) {
+            mVibrator.vibrate(FLING_EDGE_TICK, TOUCH_VIBRATION_ATTRIBUTES);
         }
     }
 
