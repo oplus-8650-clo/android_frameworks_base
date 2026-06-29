@@ -66,7 +66,7 @@ public final class RichTapVibrationEffect {
     private static final int INNER_EFFECT_STRENGTH_MEDIUM = 200;
     private static final int INNER_EFFECT_STRENGTH_STRONG = 250;
     private static final int PREBAKED_HE_MAX_EVENTS = 16;
-    private static final int PREBAKED_HE_EVENT_SIZE = 17;
+    private static final int PREBAKED_HE_EVENT_SIZE = 55;
     private static final int PREBAKED_HE_CONTINUOUS_EVENT = 0x1000;
     private static final int PREBAKED_HE_TRANSIENT_EVENT = 0x1001;
     private static final int PREBAKED_HE_DEFAULT_RELATIVE_TIME_STEP_MS = 400;
@@ -267,8 +267,8 @@ public final class RichTapVibrationEffect {
 
         JSONArray pattern = root.getJSONArray("Pattern");
         int eventCount = Math.min(pattern.length(), PREBAKED_HE_MAX_EVENTS);
-        int[] he = new int[eventCount * PREBAKED_HE_EVENT_SIZE + 1];
-        he[0] = 1;
+        int[] he = new int[1 + (eventCount * PREBAKED_HE_EVENT_SIZE)];
+        he[0] = 3;
 
         for (int i = 0; i < eventCount; i++) {
             JSONObject event = pattern.getJSONObject(i).getJSONObject("Event");
@@ -294,11 +294,34 @@ public final class RichTapVibrationEffect {
                 return null;
             }
 
-            int base = i * PREBAKED_HE_EVENT_SIZE;
-            he[base + 1] = type;
-            he[base + 2] = relativeTime;
-            he[base + 3] = intensity;
-            he[base + 4] = frequency;
+            int base = 1 + (i * PREBAKED_HE_EVENT_SIZE);
+            he[base] = type;
+            he[base + 1] = relativeTime;
+            he[base + 2] = intensity;
+            he[base + 3] = frequency;
+
+            if (type == PREBAKED_HE_CONTINUOUS_EVENT) {
+                int duration = event.has("Duration") ? event.getInt("Duration") : 0;
+                he[base + 4] = duration;
+                he[base + 5] = 0;
+
+                JSONArray curve = params.has("Curve") ? params.getJSONArray("Curve") : new JSONArray();
+                int pointCount = Math.min(curve.length(), 16);
+                he[base + 6] = pointCount;
+
+                // Flatten the curve array into the int array
+                for (int p = 0; p < pointCount; p++) {
+                    JSONObject point = curve.getJSONObject(p);
+
+                    int pointBase = base + 7 + (p * 3);
+                    he[pointBase]     = point.getInt("Time");
+                    // RichTap curves use floats (0.0-1.0) for intensity, HAL expects int (0-100)
+                    he[pointBase + 1] = (int) (point.getDouble("Intensity") * 100);
+                    he[pointBase + 2] = point.getInt("Frequency");
+                }
+            } else {
+                he[base + 4] = 0;
+            }
         }
         return he;
     }
