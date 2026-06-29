@@ -172,17 +172,19 @@ public final class RichTapVibrationEffect {
 
         String cacheKey = strengthDir + '/' + fileName;
         synchronized (sPrebakedHeCacheLock) {
-            int[] cached = sPrebakedHeCache.get(cacheKey);
-            if (cached != null) {
-                return cached;
+            if (sPrebakedHeCache.containsKey(cacheKey)) {
+                return sPrebakedHeCache.get(cacheKey);
             }
         }
 
-        int[] pattern = loadPrebakedHeEffect(PREBAKED_HE_RESOURCE_ROOT, strengthDir, fileName);
-        if (pattern != null) {
-            synchronized (sPrebakedHeCacheLock) {
-                sPrebakedHeCache.put(cacheKey, pattern);
-            }
+        int[] pattern = null;
+
+        if (new File(PREBAKED_HE_RESOURCE_ROOT).isDirectory()) {
+            pattern = loadPrebakedHeEffect(PREBAKED_HE_RESOURCE_ROOT, strengthDir, fileName);
+        }
+
+        synchronized (sPrebakedHeCacheLock) {
+            sPrebakedHeCache.put(cacheKey, pattern);
         }
         return pattern;
     }
