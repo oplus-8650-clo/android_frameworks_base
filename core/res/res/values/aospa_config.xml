@@ -155,6 +155,10 @@
     <!-- Whether to use Richtap vibration -->
     <bool name="config_usesRichtapVibration">false</bool>
 
+    <!-- Whether to use LiveTap vibration.
+         Devices with SI haptic motors (e.g. OnePlus) should set this to true. -->
+    <bool name="config_usesLivetapVibration">false</bool>
+
     <!-- Delay in ms before invoking single tap gesture
          Should be set to dt2w max time / 2 when needed -->
     <integer name="config_singleTapDelay">0</integer>

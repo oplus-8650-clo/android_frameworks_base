@@ -27,6 +27,8 @@ import android.os.HapticPlayer;
 import android.os.IBinder;
 import android.os.PatternHe;
 import android.os.PatternHeParameter;
+import android.os.RemoteException;
+import android.os.RichTapVibrationEffect;
 import android.os.ServiceManager;
 import android.os.VibrationEffect;
 import android.util.Slog;
@@ -35,9 +37,12 @@ import java.util.Locale;
 
 import vendor.aac.hardware.richtap.vibrator.IRichtapCallback;
 import vendor.aac.hardware.richtap.vibrator.IRichtapVibrator;
+import vendor.oplus.hardware.oplusvibrator.IOplusVibrator;
 
 /**
- * Service class managing RichTap vibrator functionality.
+ * Service class managing RichTap and LiveTap vibrator functionality.
+ * RichTap uses libaacvibrator.so (AAC motor IC, IRichtapVibrator extension),
+ * LiveTap uses libsivibrator.so (SinoWealth motor IC, IOplusVibrator extension).
  */
 public class RichTapVibratorService {
     public static final String ACTION_CHANGE_MODE = "richtap_change_mode";
@@ -46,14 +51,21 @@ public class RichTapVibratorService {
     private static final String VIBRATOR_DESCRIPTOR = IVibrator.DESCRIPTOR + "/default";
     private static final boolean DEBUG = false;
     private final IRichtapCallback mCallback;
-    private volatile IRichtapVibrator mRichTapVibratorService = null;
+    private final boolean mIsLivetapDevice;
+    private volatile boolean mStandaloneLivetapEffect;
 
-    private interface RichTapOperation {
-        void execute(@NonNull IRichtapVibrator service) throws Exception;
+    static boolean isEnabled() {
+        return RichTapVibrationEffect.isSupported()
+                && (!RichTapVibrationEffect.isLivetapDevice()
+                        || LiveTapWaveforms.getInstance() != null);
     }
 
-    private interface RichTapIntOperation {
-        int execute(@NonNull IRichtapVibrator service) throws Exception;
+    private volatile IRichtapVibrator mAacVibratorService = null;
+    private volatile IOplusVibrator mOplusVibratorService = null;
+
+    @FunctionalInterface
+    private interface ServiceRunnable {
+        void run() throws RemoteException;
     }
 
     public RichTapVibratorService() {
@@ -62,66 +74,72 @@ public class RichTapVibratorService {
 
     public RichTapVibratorService(@Nullable IRichtapCallback callback) {
         mCallback = callback;
+        mIsLivetapDevice = RichTapVibrationEffect.isLivetapDevice();
     }
 
-    @Nullable
-    private synchronized IRichtapVibrator getRichTapService() {
-        if (mRichTapVibratorService == null) {
-            if (DEBUG) Slog.d(TAG, "vibratorDescriptor: " + VIBRATOR_DESCRIPTOR);
+    private synchronized boolean ensureServiceConnected() {
+        if (mOplusVibratorService != null || mAacVibratorService != null) {
+            return true;
+        }
 
-            IVibrator vibratorHalService = IVibrator.Stub.asInterface(
-                    ServiceManager.getService(VIBRATOR_DESCRIPTOR));
+        String backend = mIsLivetapDevice ? "LiveTap" : "RichTap";
+        if (DEBUG) Slog.d(TAG, "Connecting to " + backend + " backend, descriptor: "
+                + VIBRATOR_DESCRIPTOR);
 
-            if (vibratorHalService == null) {
-                Slog.w(TAG, "Failed to get HAL service");
-                return null;
-            }
+        IVibrator vibratorHalService = IVibrator.Stub.asInterface(
+                ServiceManager.getService(VIBRATOR_DESCRIPTOR));
 
-            if (DEBUG) {
-                try {
-                    Slog.d(TAG, "Capabilities: " + vibratorHalService.getCapabilities());
-                } catch (Exception e) {
-                    Slog.w(TAG, "Failed to get capabilities", e);
-                }
-            }
+        if (vibratorHalService == null) {
+            Slog.w(TAG, "Failed to get HAL service for " + backend);
+            return false;
+        }
 
+        if (DEBUG) {
             try {
-                IBinder binder = vibratorHalService.asBinder().getExtension();
-                if (binder != null) {
-                    mRichTapVibratorService = IRichtapVibrator.Stub.asInterface(
-                            Binder.allowBlocking(binder));
-                    binder.linkToDeath(new RichTapHalDeathRecipient(this), 0);
-                } else {
-                    Slog.e(TAG, "Extension binder is null");
-                }
+                Slog.d(TAG, "Capabilities: " + vibratorHalService.getCapabilities());
             } catch (Exception e) {
-                Slog.e(TAG, "Failed to get extension", e);
+                Slog.w(TAG, "Failed to get capabilities", e);
             }
         }
-        return mRichTapVibratorService;
-    }
 
-    private void runOnRichTapService(String errorMessage, RichTapOperation operation) {
         try {
-            IRichtapVibrator service = getRichTapService();
-            if (service != null) {
-                operation.execute(service);
+            IBinder binder = vibratorHalService.asBinder().getExtension();
+            if (binder != null) {
+                binder = Binder.allowBlocking(binder);
+                String descriptor = binder.getInterfaceDescriptor();
+                if (IOplusVibrator.DESCRIPTOR.equals(descriptor)
+                        || (descriptor == null && mIsLivetapDevice)) {
+                    mOplusVibratorService = IOplusVibrator.Stub.asInterface(binder);
+                } else {
+                    mAacVibratorService = IRichtapVibrator.Stub.asInterface(binder);
+                }
+                binder.linkToDeath(new RichTapHalDeathRecipient(this), 0);
+                Slog.i(TAG, backend + " vibrator service connected with descriptor: "
+                        + descriptor);
+                return true;
+            } else {
+                Slog.e(TAG, "Extension binder is null - " + backend
+                        + " HAL may not be running");
             }
         } catch (Exception e) {
-            Slog.e(TAG, errorMessage, e);
+            Slog.e(TAG, "Failed to get " + backend + " extension", e);
         }
+        return false;
     }
 
-    private int callRichTapService(String errorMessage, RichTapIntOperation operation) {
-        try {
-            IRichtapVibrator service = getRichTapService();
-            if (service != null) {
-                return operation.execute(service);
+    private boolean runOnService(String errorMessage, ServiceRunnable action) {
+        if (ensureServiceConnected()) {
+            try {
+                action.run();
+                return true;
+            } catch (RemoteException e) {
+                Slog.e(TAG, errorMessage, e);
+                resetHalServiceProxy();
+            } catch (Exception e) {
+                Slog.e(TAG, errorMessage, e);
             }
-        } catch (Exception e) {
-            Slog.e(TAG, errorMessage, e);
         }
-        return 0;
+        return false;
     }
 
     /**
@@ -130,9 +148,13 @@ public class RichTapVibratorService {
      * @param millis The duration in milliseconds
      */
     public void richTapVibratorOn(long millis) {
-        runOnRichTapService("Failed to execute vibratorOn", service -> {
+        runOnService("Failed to execute vibratorOn", () -> {
             if (DEBUG) Slog.d(TAG, "Executing vibratorOn");
-            service.on((int) millis, mCallback);
+            if (mOplusVibratorService != null) {
+                mOplusVibratorService.on((int) millis, mCallback);
+            } else if (mAacVibratorService != null) {
+                mAacVibratorService.on((int) millis, mCallback);
+            }
         });
     }
 
@@ -142,9 +164,13 @@ public class RichTapVibratorService {
      * @param amplitude The amplitude value
      */
     public void richTapVibratorSetAmplitude(int amplitude) {
-        runOnRichTapService("Failed to set amplitude", service -> {
+        runOnService("Failed to set amplitude", () -> {
             if (DEBUG) Slog.d(TAG, "Setting amplitude: " + amplitude);
-            service.setAmplitude(amplitude, mCallback);
+            if (mOplusVibratorService != null) {
+                mOplusVibratorService.setAmplitude(amplitude, mCallback);
+            } else if (mAacVibratorService != null) {
+                mAacVibratorService.setAmplitude(amplitude, mCallback);
+            }
         });
     }
 
@@ -156,10 +182,14 @@ public class RichTapVibratorService {
      * @param freq      The frequency value
      */
     public void richTapVibratorOnRawPattern(@NonNull int[] pattern, int amplitude, int freq) {
-        runOnRichTapService("Failed to execute raw pattern", service -> {
+        runOnService("Failed to execute raw pattern", () -> {
             if (DEBUG) Slog.d(TAG, "Executing raw pattern with amplitude: " +
                     amplitude + ", freq: " + freq);
-            service.performHe(1, 0, amplitude, freq, pattern, mCallback);
+            if (mOplusVibratorService != null) {
+                mOplusVibratorService.performHe(1, 0, amplitude, freq, pattern, mCallback);
+            } else if (mAacVibratorService != null) {
+                mAacVibratorService.performHe(1, 0, amplitude, freq, pattern, mCallback);
+            }
         });
     }
 
@@ -176,9 +206,14 @@ public class RichTapVibratorService {
         int amplitude = patternHe.getAmplitude();
         int freq = patternHe.getFreq();
 
-        runOnRichTapService("Failed to execute pattern HE effect", service -> {
+        runOnService("Failed to execute pattern HE effect", () -> {
             if (DEBUG) Slog.d(TAG, "Executing pattern HE effect");
-            service.performHe(looper, interval, amplitude, freq, pattern, mCallback);
+            if (mOplusVibratorService != null) {
+                mOplusVibratorService.performHe(looper, interval, amplitude, freq, pattern, mCallback);
+                mStandaloneLivetapEffect = true;
+            } else if (mAacVibratorService != null) {
+                mAacVibratorService.performHe(looper, interval, amplitude, freq, pattern, mCallback);
+            }
         });
     }
 
@@ -206,9 +241,14 @@ public class RichTapVibratorService {
 
         richTapVibratorSetAmplitude(amplitude);
 
-        runOnRichTapService("Failed to execute envelope effect", service -> {
+        runOnService("Failed to execute envelope effect", () -> {
             if (DEBUG) Slog.d(TAG, "Executing envelope effect");
-            service.performEnvelope(params, steepMode, mCallback);
+            if (mOplusVibratorService != null) {
+                mOplusVibratorService.performEnvelope(params, steepMode, mCallback);
+                mStandaloneLivetapEffect = true;
+            } else if (mAacVibratorService != null) {
+                mAacVibratorService.performEnvelope(params, steepMode, mCallback);
+            }
         });
     }
 
@@ -216,10 +256,21 @@ public class RichTapVibratorService {
      * Stops all vibrations.
      */
     public void richTapVibratorStop() {
-        runOnRichTapService("Failed to stop vibrator", service -> {
+        runOnService("Failed to stop vibrator", () -> {
             if (DEBUG) Slog.d(TAG, "Stopping vibrator");
-            service.stop(mCallback);
+            if (mOplusVibratorService != null) {
+                mOplusVibratorService.stop(mCallback);
+                mStandaloneLivetapEffect = false;
+            } else if (mAacVibratorService != null) {
+                mAacVibratorService.stop(mCallback);
+            }
         });
+    }
+
+    void stopStandaloneEffect() {
+        if (!mIsLivetapDevice || mStandaloneLivetapEffect) {
+            richTapVibratorStop();
+        }
     }
 
     /**
@@ -229,9 +280,13 @@ public class RichTapVibratorService {
      * @param length The length of the data
      */
     private void setHapticParam(int[] data, int length) {
-        runOnRichTapService("Failed to set haptic parameters", service -> {
+        runOnService("Failed to set haptic parameters", () -> {
             if (DEBUG) Slog.d(TAG, "Setting haptic parameters, length: " + length);
-            service.setHapticParam(data, length, mCallback);
+            if (mOplusVibratorService != null) {
+                mOplusVibratorService.setHapticParam(data, length, mCallback);
+            } else if (mAacVibratorService != null) {
+                mAacVibratorService.setHapticParam(data, length, mCallback);
+            }
         });
     }
 
@@ -261,11 +316,58 @@ public class RichTapVibratorService {
      * @return The command id returned by the HAL
      */
     public int richTapVibratorPerform(int id, byte scale) {
-        return callRichTapService("Failed to perform effect", service -> {
-            if (DEBUG) Slog.d(TAG, "Performing predefined effect");
-            int cmdId = service.perform(id, scale, mCallback);
-            if (DEBUG) Slog.d(TAG, "Effect command id: " + cmdId);
-            return cmdId;
+        if (ensureServiceConnected()) {
+            try {
+                if (DEBUG) Slog.d(TAG, "Performing predefined effect: " + id);
+                if (mOplusVibratorService != null) {
+                    int unsignedStrength = Byte.toUnsignedInt(scale);
+                    if (unsignedStrength > 100) {
+                        unsignedStrength = Math.round((unsignedStrength * 100.0f) / 255.0f);
+                    }
+                    byte scaledStrength = (byte) Math.max(1, Math.min(100, unsignedStrength));
+                    int commandId = mOplusVibratorService.perform(id, scaledStrength, mCallback);
+                    mStandaloneLivetapEffect |= commandId > 0;
+                    return commandId;
+                } else if (mAacVibratorService != null) {
+                    return mAacVibratorService.perform(id, scale, mCallback);
+                }
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Failed to perform effect", e);
+                resetHalServiceProxy();
+            } catch (Exception e) {
+                Slog.e(TAG, "Failed to perform effect", e);
+            }
+        }
+        return 0;
+    }
+
+    boolean playLivetapWaveform(LiveTapWaveforms.Waveform waveform, int intensity) {
+        return runOnService("Failed to play LiveTap waveform", () -> {
+            IOplusVibrator service = mOplusVibratorService;
+            if (service == null) {
+                throw new UnsupportedOperationException("LiveTap extension unavailable");
+            }
+            service.linearMotorVibratorOn(waveform.id(), intensity, waveform.rtp());
+        });
+    }
+
+    boolean playLivetapChirp(LiveTapWaveforms.Chirp chirp, float scale) {
+        return runOnService("Failed to play LiveTap chirp", () -> {
+            IOplusVibrator service = mOplusVibratorService;
+            if (service == null) {
+                throw new UnsupportedOperationException("LiveTap extension unavailable");
+            }
+            service.performHe(1, 0, Math.max(1, Math.round(scale * 255)), 0, chirp.pattern(), null);
+        });
+    }
+
+    boolean stopLivetapWaveform() {
+        return runOnService("Failed to stop LiveTap waveform", () -> {
+            IOplusVibrator service = mOplusVibratorService;
+            if (service == null) {
+                throw new UnsupportedOperationException("LiveTap extension unavailable");
+            }
+            service.linearMotorVibratorOff();
         });
     }
 
@@ -292,8 +394,13 @@ public class RichTapVibratorService {
                         ", amplitude: " + amplitude + ", freq: " + freq);
             }
 
-            runOnRichTapService("Failed to process PatternHeParameter", service ->
-                    service.performHeParam(interval, amplitude, freq, mCallback));
+            runOnService("Failed to process PatternHeParameter", () -> {
+                if (mOplusVibratorService != null) {
+                    mOplusVibratorService.performHeParam(interval, amplitude, freq, mCallback);
+                } else if (mAacVibratorService != null) {
+                    mAacVibratorService.performHeParam(interval, amplitude, freq, mCallback);
+                }
+            });
             return true;
         } else if (effect instanceof HapticParameter parameter) {
             int[] param = parameter.getParam();
@@ -319,7 +426,14 @@ public class RichTapVibratorService {
      * @return true if it's a RichTap effect, false otherwise
      */
     public boolean checkIfRichTapEffect(VibrationEffect effect, String reason) {
-        if (reason != null && reason.equals(HapticPlayer.VIBRATE_REASON)) {
+        if (HapticPlayer.VIBRATE_REASON.equals(reason)) {
+            if (mIsLivetapDevice && effect instanceof PatternHe patternHe) {
+                // HE 2.0 packets carry the first pattern index after the five-word header.
+                // Keep the preceding packet playing so LiveTap can join the continuation.
+                int[] pattern = patternHe.getPatternInfo();
+                return pattern.length >= 8 && pattern[0] == HapticPlayer.FORMAT_VERSION
+                        && pattern[1] == 2 && pattern[5] > 0;
+            }
             return false;
         }
 
@@ -335,7 +449,9 @@ public class RichTapVibratorService {
      */
     void resetHalServiceProxy() {
         synchronized (this) {
-            mRichTapVibratorService = null;
+            mOplusVibratorService = null;
+            mAacVibratorService = null;
+            mStandaloneLivetapEffect = false;
         }
     }
 

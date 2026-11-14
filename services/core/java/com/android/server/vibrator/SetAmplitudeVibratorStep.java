@@ -82,6 +82,21 @@ final class SetAmplitudeVibratorStep extends AbstractComposedVibratorStep {
             }
 
             float amplitude = stepSegment.getAmplitude();
+            if (amplitude > 0 && mPendingVibratorOffDeadline <= now
+                    && effect.getRepeatIndex() < 0 && segmentIndex == effect.getSegments().size() - 1
+                    && stepSegment.getDuration()
+                            <= LiveTapWaveforms.MAX_SHORT_DURATION_MS
+                    && LiveTapWaveforms.getInstance() != null) {
+                int stepId = conductor.nextVibratorCallbackStepId(getVibratorId());
+                long duration = vibrator.onShortHaptic(getVibration().id, stepId,
+                        stepSegment.getDuration(), amplitude,
+                        getVibration().callerInfo.attrs.getUsage());
+                if (duration > 0) {
+                    handleVibratorOnResult(duration);
+                    getVibration().stats.reportVibratorOn(duration);
+                    return vibratorOnNextSteps(/* segmentsPlayed= */ 1);
+                }
+            }
             if (amplitude == 0) {
                 if (mPendingVibratorOffDeadline > now) {
                     // Amplitude cannot be set to zero, so stop the vibrator.

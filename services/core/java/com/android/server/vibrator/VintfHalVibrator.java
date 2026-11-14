@@ -23,6 +23,7 @@ import static android.os.VibrationEffect.effectStrengthToString;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.hardware.vibrator.CompositeEffect;
+import android.hardware.vibrator.CompositePrimitive;
 import android.hardware.vibrator.CompositePwleV2;
 import android.hardware.vibrator.FrequencyAccelerationMapEntry;
 import android.hardware.vibrator.IVibrator;
@@ -39,12 +40,14 @@ import android.os.RemoteException;
 import android.os.RichTapVibrationEffect;
 import android.os.ServiceManager;
 import android.os.Trace;
+import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
 import android.os.VibratorInfo;
 import android.os.vibrator.PrebakedSegment;
 import android.os.vibrator.PrimitiveSegment;
 import android.os.vibrator.PwlePoint;
 import android.util.IndentingPrintWriter;
+import android.util.IntArray;
 import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
@@ -120,6 +123,12 @@ class VintfHalVibrator {
         private static final String TAG = "DefaultHalVibrator";
 
         private final Object mLock = new Object();
+        @GuardedBy("mLock")
+        private Object mCompositionToken = new Object();
+        @GuardedBy("mLock")
+        private boolean mPlayingLivetapWaveform;
+        @GuardedBy("mLock")
+        private boolean mPlayingLivetapChirp;
         private final int mVibratorId;
         private final VintfSupplier<IVibrator> mHalSupplier;
         private final Handler mHandler;
@@ -139,6 +148,8 @@ class VintfHalVibrator {
 
         @Nullable
         private RichTapVibratorService mRichTapService;
+        @Nullable
+        private final LiveTapWaveforms mLivetapWaveforms;
 
         DefaultHalVibrator(int vibratorId, VintfSupplier<IVibrator> supplier, Handler handler,
                 HalNativeHandler nativeHandler) {
@@ -149,8 +160,9 @@ class VintfHalVibrator {
             mVibratorInfo = new VibratorInfo.Builder(vibratorId).build();
             mCurrentState = State.IDLE;
             mCurrentAmplitude = 0;
+            mLivetapWaveforms = LiveTapWaveforms.getInstance();
 
-            if (RichTapVibrationEffect.isSupported()) {
+            if (RichTapVibratorService.isEnabled()) {
                 mRichTapService = new RichTapVibratorService();
             }
         }
@@ -322,8 +334,9 @@ class VintfHalVibrator {
             Trace.traceBegin(TRACE_TAG_VIBRATOR, "HalVibrator.onMillis");
             try {
                 synchronized (mLock) {
+                    stopLivetap();
                     int result;
-                    if (mRichTapService != null) {
+                    if (mRichTapService != null && mLivetapWaveforms == null) {
                         mRichTapService.richTapVibratorOn(milliseconds);
                         result = (int) milliseconds;
                     } else if (mVibratorInfo.hasCapability(IVibrator.CAP_ON_CALLBACK)) {
@@ -350,6 +363,29 @@ class VintfHalVibrator {
                 }
             } finally {
                 Trace.traceEnd(TRACE_TAG_VIBRATOR);
+            }
+        }
+
+        @Override
+        public long onShortHaptic(long vibrationId, long stepId, long milliseconds,
+                float amplitude, int usage) {
+            synchronized (mLock) {
+                if (mRichTapService == null || mLivetapWaveforms == null
+                        || milliseconds <= 0
+                        || milliseconds > LiveTapWaveforms.MAX_SHORT_DURATION_MS
+                        || amplitude <= 0) {
+                    return 0;
+                }
+                stopLivetap();
+                boolean keyboard = usage == VibrationAttributes.USAGE_IME_FEEDBACK;
+                int intensity = LiveTapWaveforms.motorLevel(amplitude);
+                int duration = playLivetapWaveform(
+                        LiveTapWaveforms.fromDuration(milliseconds, keyboard), intensity);
+                if (duration == 0 && keyboard) {
+                    duration = playLivetapWaveform(
+                            LiveTapWaveforms.fromDuration(milliseconds, false), intensity);
+                }
+                return finishLivetapStart(vibrationId, stepId, duration);
             }
         }
 
@@ -383,11 +419,25 @@ class VintfHalVibrator {
 
         @Override
         public long on(long vibrationId, long stepId, PrebakedSegment prebaked) {
+            return onPrebaked(vibrationId, stepId, prebaked, VibrationAttributes.USAGE_UNKNOWN);
+        }
+
+        @Override
+        public long onPrebaked(long vibrationId, long stepId, PrebakedSegment prebaked, int usage) {
             Trace.traceBegin(TRACE_TAG_VIBRATOR, "HalVibrator.onPrebaked");
             try {
                 synchronized (mLock) {
+                    if (mLivetapWaveforms != null && mRichTapService != null
+                            && RichTapVibrationEffect.isInnerEffectSupported(
+                                    prebaked.getEffectId())) {
+                        long duration = performLivetapPrebaked(vibrationId, stepId, prebaked, usage);
+                        if (duration > 0) {
+                            return duration;
+                        }
+                    }
+
                     int result = 0;
-                    boolean useRichTap = mRichTapService != null
+                    boolean useRichTap = mRichTapService != null && mLivetapWaveforms == null
                             && RichTapVibrationEffect.isInnerEffectSupported(
                                     prebaked.getEffectId());
                     int[] pattern = useRichTap ? RichTapVibrationEffect.getPrebakedHeEffect(
@@ -445,6 +495,10 @@ class VintfHalVibrator {
             Trace.traceBegin(TRACE_TAG_VIBRATOR, "HalVibrator.onPrimitives");
             try {
                 synchronized (mLock) {
+                    if (mRichTapService != null && mLivetapWaveforms != null
+                            && primitives != null && primitives.length > 0) {
+                        return performLivetapPrimitives(vibrationId, stepId, primitives);
+                    }
                     if (!mVibratorInfo.hasCapability(IVibrator.CAP_COMPOSE_EFFECTS)) {
                         return 0;
                     }
@@ -515,7 +569,7 @@ class VintfHalVibrator {
             Trace.traceBegin(TRACE_TAG_VIBRATOR, "HalVibrator.off");
             try {
                 synchronized (mLock) {
-                    boolean result = VintfUtils.runNoThrow(mHalSupplier,
+                    boolean result = stopLivetap() || VintfUtils.runNoThrow(mHalSupplier,
                             IVibrator::off, e -> logError("Error turning off vibrator", e));
                     updateStateAndNotifyListenersLocked(State.IDLE);
                     return result;
@@ -622,9 +676,34 @@ class VintfHalVibrator {
             VibratorInfo.Builder builder = new VibratorInfo.Builder(vibratorId);
             int capabilities = getValueOrDefault(IVibrator::getCapabilities, 0,
                     "Error loading capabilities");
+            if (mLivetapWaveforms != null) {
+                capabilities |= IVibrator.CAP_COMPOSE_EFFECTS;
+            }
             builder.setCapabilities(capabilities);
-            getValue(IVibrator::getSupportedEffects, builder::setSupportedEffects,
-                    "Error loading supported effects");
+            if (mRichTapService != null) {
+                int[] halSupported = getValueOrDefault(IVibrator::getSupportedEffects, new int[0],
+                        "Error loading supported effects");
+                IntArray allEffects = new IntArray(
+                        (halSupported != null ? halSupported.length : 0)
+                                + RichTapVibrationEffect.RICHTAP_SUPPORTED_EFFECTS.length);
+                if (halSupported != null) {
+                    for (int e : halSupported) {
+                        allEffects.add(e);
+                    }
+                }
+                for (int e : RichTapVibrationEffect.RICHTAP_SUPPORTED_EFFECTS) {
+                    if (allEffects.indexOf(e) < 0 && (mLivetapWaveforms == null
+                            || mLivetapWaveforms.get(LiveTapWaveforms.fromPrebaked(e)) != null
+                            || (e == VibrationEffect.EFFECT_DOUBLE_CLICK
+                                    && mLivetapWaveforms.get(LiveTapWaveforms.CLICK) != null))) {
+                        allEffects.add(e);
+                    }
+                }
+                builder.setSupportedEffects(allEffects.toArray());
+            } else {
+                getValue(IVibrator::getSupportedEffects, builder::setSupportedEffects,
+                        "Error loading supported effects");
+            }
             if ((capabilities & IVibrator.CAP_GET_Q_FACTOR) != 0) {
                 getValue(IVibrator::getQFactor, builder::setQFactor, "Error loading q-factor");
             }
@@ -649,6 +728,21 @@ class VintfHalVibrator {
         }
 
         private void loadInfoForPrimitives(VibratorInfo.Builder builder, int capabilities) {
+            if (mLivetapWaveforms != null) {
+                builder.setCompositionSizeMax(32);
+                builder.setPrimitiveDelayMax(5000);
+                builder.setSupportedPrimitive(CompositePrimitive.NOOP, 0);
+                for (int primitive : new int[] {CompositePrimitive.CLICK, CompositePrimitive.THUD,
+                        CompositePrimitive.LIGHT_TICK, CompositePrimitive.LOW_TICK,
+                        CompositePrimitive.SLOW_RISE, CompositePrimitive.QUICK_RISE,
+                        CompositePrimitive.QUICK_FALL, CompositePrimitive.SPIN}) {
+                    int duration = getLivetapPrimitiveDuration(primitive);
+                    if (duration > 0) {
+                        builder.setSupportedPrimitive(primitive, duration);
+                    }
+                }
+                return;
+            }
             if ((capabilities & IVibrator.CAP_COMPOSE_EFFECTS) == 0) {
                 return;
             }
@@ -737,6 +831,151 @@ class VintfHalVibrator {
                 String errorMessage) {
             return VintfUtils.getOrDefault(mHalSupplier, getter, defaultValue,
                     e -> logError(errorMessage, e));
+        }
+
+        @GuardedBy("mLock")
+        private int playLivetapWaveform(int effectId, int intensity) {
+            return playLivetapWaveform(mLivetapWaveforms.get(effectId), intensity);
+        }
+
+        @GuardedBy("mLock")
+        private int playLivetapWaveform(@Nullable LiveTapWaveforms.Waveform waveform,
+                int intensity) {
+            if (waveform != null && mRichTapService.playLivetapWaveform(waveform, intensity)) {
+                mPlayingLivetapWaveform = true;
+                return waveform.durationMs();
+            }
+            return 0;
+        }
+
+        @GuardedBy("mLock")
+        private long performLivetapPrebaked(long vibrationId, long stepId,
+                PrebakedSegment prebaked, int usage) {
+            int effectId = LiveTapWaveforms.fromPrebaked(prebaked.getEffectId());
+            int intensity = (prebaked.getEffectStrength() + 1) * 800;
+            stopLivetap();
+            long duration = 0;
+            if (usage == VibrationAttributes.USAGE_IME_FEEDBACK) {
+                if (effectId == LiveTapWaveforms.CLICK) {
+                    duration = playLivetapWaveform(LiveTapWaveforms.KEYBOARD_LIGHT, intensity);
+                } else if (effectId == LiveTapWaveforms.HEAVY_CLICK) {
+                    duration = playLivetapWaveform(LiveTapWaveforms.KEYBOARD_MEDIUM, intensity);
+                }
+            }
+            if (duration == 0) {
+                duration = playLivetapWaveform(effectId, intensity);
+            }
+            if (duration == 0 && effectId == LiveTapWaveforms.DOUBLE_CLICK) {
+                duration = playLivetapWaveform(LiveTapWaveforms.CLICK, intensity);
+                if (duration > 0) {
+                    long secondClickDelay = duration + 50;
+                    postLivetap(() -> playLivetapWaveform(LiveTapWaveforms.CLICK, intensity),
+                            secondClickDelay);
+                    duration += secondClickDelay;
+                }
+            }
+            return finishLivetapStart(vibrationId, stepId, duration);
+        }
+
+        @GuardedBy("mLock")
+        private long performLivetapPrimitives(long vibrationId, long stepId,
+                PrimitiveSegment[] primitives) {
+            for (PrimitiveSegment primitive : primitives) {
+                int primitiveId = primitive.getPrimitiveId();
+                if (primitiveId != CompositePrimitive.NOOP
+                        && getLivetapPrimitiveDuration(primitiveId) == 0) {
+                    return 0;
+                }
+            }
+
+            stopLivetap();
+            long currentOffsetMs = 0;
+            for (PrimitiveSegment primitive : primitives) {
+                currentOffsetMs += primitive.getDelay();
+                int primitiveId = primitive.getPrimitiveId();
+                if (primitiveId != CompositePrimitive.NOOP && primitive.getScale() > 0f) {
+                    if (currentOffsetMs > 0) {
+                        postLivetap(() -> playLivetapPrimitive(primitive), currentOffsetMs);
+                    } else if (!playLivetapPrimitive(primitive)) {
+                        return 0;
+                    }
+                }
+                currentOffsetMs += getLivetapPrimitiveDuration(primitiveId);
+            }
+            return finishLivetapStart(vibrationId, stepId, currentOffsetMs);
+        }
+
+        private int getLivetapPrimitiveDuration(int primitiveId) {
+            var chirp = LiveTapWaveforms.getPrimitiveChirp(primitiveId);
+            if (chirp != null) {
+                return chirp.durationMs();
+            }
+            var waveform = mLivetapWaveforms.getPrimitiveWaveform(primitiveId);
+            return waveform == null ? 0 : waveform.durationMs();
+        }
+
+        @GuardedBy("mLock")
+        private boolean playLivetapPrimitive(PrimitiveSegment primitive) {
+            stopLivetapChirp();
+            int primitiveId = primitive.getPrimitiveId();
+            var chirp = LiveTapWaveforms.getPrimitiveChirp(primitiveId);
+            if (chirp != null) {
+                stopLivetapWaveform();
+                mPlayingLivetapChirp = mRichTapService.playLivetapChirp(chirp, primitive.getScale());
+                return mPlayingLivetapChirp;
+            }
+            return playLivetapWaveform(mLivetapWaveforms.getPrimitiveWaveform(primitiveId),
+                    LiveTapWaveforms.primitiveMotorLevel(primitiveId, primitive.getScale())) > 0;
+        }
+
+        @GuardedBy("mLock")
+        private void postLivetap(Runnable playback, long delay) {
+            Object token = mCompositionToken;
+            mHandler.postDelayed(() -> {
+                synchronized (mLock) {
+                    if (token == mCompositionToken) {
+                        playback.run();
+                    }
+                }
+            }, token, delay);
+        }
+
+        @GuardedBy("mLock")
+        private long finishLivetapStart(long vibrationId, long stepId, long duration) {
+            if (duration > 0) {
+                mHandler.postDelayed(newVibrationCallback(vibrationId, stepId),
+                        mCompositionToken, duration);
+                updateStateAndNotifyListenersLocked(State.VIBRATING);
+            }
+            return duration;
+        }
+
+        @GuardedBy("mLock")
+        private boolean stopLivetap() {
+            if (mRichTapService != null && mLivetapWaveforms != null) {
+                mHandler.removeCallbacksAndMessages(mCompositionToken);
+                mCompositionToken = new Object();
+                stopLivetapChirp();
+                return stopLivetapWaveform();
+            }
+            return false;
+        }
+
+        @GuardedBy("mLock")
+        private void stopLivetapChirp() {
+            if (mPlayingLivetapChirp) {
+                mRichTapService.richTapVibratorStop();
+                mPlayingLivetapChirp = false;
+            }
+        }
+
+        @GuardedBy("mLock")
+        private boolean stopLivetapWaveform() {
+            if (mPlayingLivetapWaveform) {
+                mPlayingLivetapWaveform = false;
+                return mRichTapService.stopLivetapWaveform();
+            }
+            return false;
         }
 
         private void logError(String message, Throwable error) {

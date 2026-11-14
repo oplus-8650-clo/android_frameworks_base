@@ -225,6 +225,27 @@ public final class HapticFeedbackVibrationProvider {
      */
     @Nullable
     private VibrationEffect getVibrationForHapticFeedback(int effectId) {
+        LiveTapWaveforms waveforms = LiveTapWaveforms.getInstance();
+        if (waveforms != null) {
+            int effect = switch (effectId) {
+                case HapticFeedbackConstants.CLOCK_TICK, HapticFeedbackConstants.CONTEXT_CLICK,
+                        HapticFeedbackConstants.TEXT_HANDLE_MOVE -> VibrationEffect.EFFECT_CLICK;
+                case HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.VIRTUAL_KEY,
+                        HapticFeedbackConstants.KEYBOARD_TAP,
+                        HapticFeedbackConstants.KEYBOARD_RELEASE,
+                        HapticFeedbackConstants.VIRTUAL_KEY_RELEASE,
+                        HapticFeedbackConstants.DRAG_CROSSING, HapticFeedbackConstants.GESTURE_START,
+                        HapticFeedbackConstants.GESTURE_END, HapticFeedbackConstants.EDGE_RELEASE,
+                        HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE,
+                        HapticFeedbackConstants.CONFIRM -> VibrationEffect.EFFECT_HEAVY_CLICK;
+                case HapticFeedbackConstants.CALENDAR_DATE -> VibrationEffect.EFFECT_THUD;
+                case HapticFeedbackConstants.EDGE_SQUEEZE -> VibrationEffect.EFFECT_TEXTURE_TICK;
+                default -> -1;
+            };
+            if (waveforms.get(LiveTapWaveforms.fromPrebaked(effect)) != null) {
+                return VibrationEffect.get(effect);
+            }
+        }
         switch (effectId) {
             case HapticFeedbackConstants.CONTEXT_CLICK:
             case HapticFeedbackConstants.GESTURE_END:
