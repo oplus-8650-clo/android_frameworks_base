@@ -120,6 +120,12 @@ interface HalVibrator {
      */
     long on(long vibrationId, long stepId, long milliseconds);
 
+    /** Plays a short pulse using a calibrated waveform if the device provides one. */
+    default long onShortHaptic(long vibrationId, long stepId, long milliseconds, float amplitude,
+            int usage) {
+        return 0;
+    }
+
     /**
      * Plays vendor vibration effect, using {@code vibrationId} and {@code stepId} for completion
      * callback.
@@ -141,6 +147,11 @@ interface HalVibrator {
      * do not support the input or a negative number if the operation failed.
      */
     long on(long vibrationId, long stepId, PrebakedSegment prebaked);
+
+    /** Plays a predefined effect with the vibration usage available for device-specific playback. */
+    default long onPrebaked(long vibrationId, long stepId, PrebakedSegment prebaked, int usage) {
+        return on(vibrationId, stepId, prebaked);
+    }
 
     /**
      * Plays a composition of vibration primitives, using {@code vibrationId} and {@code stepId} for

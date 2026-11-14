@@ -61,7 +61,6 @@ import android.os.PowerManager;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
-import android.os.RichTapVibrationEffect;
 import android.os.ServiceManager;
 import android.os.ShellCallback;
 import android.os.ShellCommand;
@@ -418,7 +417,7 @@ public class VibratorManagerService extends IVibratorManagerService.Stub {
         // Initiate Local Service
         mInternalService = new LocalService();
 
-        if (RichTapVibrationEffect.isSupported()) {
+        if (RichTapVibratorService.isEnabled()) {
             mRichTapService = new RichTapVibratorService(mRichTapAidlCallback);
         }
 

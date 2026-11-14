@@ -78,7 +78,7 @@ final class VibratorController implements HalVibrator {
         mVibratorInfo = new VibratorInfo.Builder(vibratorId).build();
         mCurrentState = State.IDLE;
 
-        if (RichTapVibrationEffect.isSupported()) {
+        if (RichTapVibratorService.isEnabled()) {
             mRichTapService = new RichTapVibratorService();
         }
     }

@@ -72,6 +72,20 @@ public final class RichTapVibrationEffect {
     private static final int PREBAKED_HE_DEFAULT_RELATIVE_TIME_STEP_MS = 400;
     private static final String PREBAKED_HE_RESOURCE_ROOT = "/vendor/etc/richtapresources";
 
+    /**
+     * Standard Android vibration effects handled by the RichTap / LiveTap backend.
+     * @hide
+     */
+    public static final int[] RICHTAP_SUPPORTED_EFFECTS = new int[]{
+            VibrationEffect.EFFECT_CLICK,
+            VibrationEffect.EFFECT_DOUBLE_CLICK,
+            VibrationEffect.EFFECT_TICK,
+            VibrationEffect.EFFECT_THUD,
+            VibrationEffect.EFFECT_POP,
+            VibrationEffect.EFFECT_HEAVY_CLICK,
+            VibrationEffect.EFFECT_TEXTURE_TICK,
+    };
+
     private static final Object sPrebakedHeCacheLock = new Object();
     private static final Map<String, int[]> sPrebakedHeCache = new HashMap<>();
 
@@ -81,14 +95,24 @@ public final class RichTapVibrationEffect {
     }
 
     /**
-     * Checks if RichTap vibration is supported on this device.
+     * Checks if RichTap or LiveTap vibration is supported on this device.
+     * RichTap uses IRichtapVibrator, while LiveTap uses IOplusVibrator.
      *
      * @return A boolean indicating support status
      * @hide
      */
     public static boolean isSupported() {
-        return Resources.getSystem().getBoolean(R.bool.config_usesRichtapVibration) &&
-               checkIfRichTapSupport() != Vibrator.VIBRATION_EFFECT_SUPPORT_NO;
+        return (Resources.getSystem().getBoolean(R.bool.config_usesRichtapVibration)
+                || Resources.getSystem().getBoolean(R.bool.config_usesLivetapVibration))
+                && checkIfRichTapSupport() != Vibrator.VIBRATION_EFFECT_SUPPORT_NO;
+    }
+
+    /**
+     * Returns whether the device configures the LiveTap backend.
+     * @hide
+     */
+    public static boolean isLivetapDevice() {
+        return Resources.getSystem().getBoolean(R.bool.config_usesLivetapVibration);
     }
 
     /**
