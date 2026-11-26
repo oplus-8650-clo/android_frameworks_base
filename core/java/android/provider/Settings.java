@@ -12052,6 +12052,13 @@ public final class Settings {
         @android.provider.Settings.Readable
         public static final String DUAL_SHADE = "dual_shade";
 
+        /**
+         * Whether the brightness slider is shown above the collapsed Quick Settings tiles.
+         *
+         * @hide
+         */
+        public static final String QQS_BRIGHTNESS_SLIDER = "qqs_brightness_slider";
+
        /**
          * 1 if it is allowed to remove the primary GAIA account. 0 by default.
          * @hide

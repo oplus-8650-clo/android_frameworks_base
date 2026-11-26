@@ -25,6 +25,7 @@ fun TransitionBuilder.quickQuickSettingsToQuickSettings(
 ) {
 
     fractionRange(start = 0.43f) { fade(Elements.QuickSettingsContent) }
+    fractionRange(end = 0.43f) { fade(Elements.CollapsedBrightnessSlider) }
 
     fractionRange(start = 0.9f) { fade(Elements.FooterActions) }
 

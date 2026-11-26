@@ -16,10 +16,13 @@
 
 package com.android.systemui.qs.panels.ui.viewmodel
 
+import com.android.systemui.brightness.ui.viewmodel.brightnessSliderViewModelFactory
+import com.android.systemui.display.domain.interactor.shadeDisplayTypeRepository
 import com.android.systemui.haptics.msdl.tileHapticsViewModelFactory
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.qs.panels.domain.interactor.quickQuickSettingsRowInteractor
 import com.android.systemui.qs.pipeline.domain.interactor.currentTilesInteractor
+import com.android.systemui.shared.settings.data.repository.secureSettingsRepository
 
 val Kosmos.quickQuickSettingsViewModelFactory by
     Kosmos.Fixture {
@@ -33,6 +36,9 @@ val Kosmos.quickQuickSettingsViewModelFactory by
                     tileSquishinessViewModel,
                     iconTilesViewModel,
                     tileHapticsViewModelFactory,
+                    brightnessSliderViewModelFactory,
+                    secureSettingsRepository,
+                    shadeDisplayTypeRepository,
                 )
             }
         }

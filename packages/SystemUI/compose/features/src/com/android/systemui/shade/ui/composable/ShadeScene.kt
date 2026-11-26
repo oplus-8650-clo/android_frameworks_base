@@ -53,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -84,6 +85,8 @@ import com.android.compose.modifiers.height
 import com.android.compose.modifiers.padding
 import com.android.compose.modifiers.thenIf
 import com.android.internal.jank.InteractionJankMonitor
+import com.android.systemui.brightness.ui.compose.BrightnessSliderContainer
+import com.android.systemui.brightness.ui.compose.ContainerColors
 import com.android.systemui.common.ui.compose.windowinsets.CutoutLocation
 import com.android.systemui.common.ui.compose.windowinsets.LocalDisplayCutout
 import com.android.systemui.compose.modifiers.sysuiResTag
@@ -370,6 +373,10 @@ private fun ContentScope.SingleShade(
                 val qqsLayoutPaddingBottom = 16.dp
                 val qsHorizontalMargin =
                     shadeHorizontalPadding + dimensionResource(id = R.dimen.qs_horizontal_margin)
+                val qqsViewModel =
+                    rememberViewModel(traceName = "shade_scene_qqs") {
+                        viewModel.quickQuickSettingsViewModel.create()
+                    }
                 MediaAndQqsLayout(
                     modifier =
                         Modifier.element(QuickSettings.Elements.QuickQuickSettingsAndMedia)
@@ -380,6 +387,35 @@ private fun ContentScope.SingleShade(
                             }
                             .padding(bottom = qqsLayoutPaddingBottom)
                             .padding(horizontal = qsHorizontalMargin),
+                    brightness = {
+                        if (viewModel.isQsEnabled && qqsViewModel.isBrightnessSliderVisible) {
+                            Element(QuickSettings.Elements.CollapsedBrightnessSlider, Modifier) {
+                                val brightnessViewModel =
+                                    rememberViewModel(traceName = "shade_scene_brightness") {
+                                        qqsViewModel.brightnessSliderViewModelFactory.create(
+                                            supportsMirroring = false
+                                        )
+                                    }
+                                BrightnessSliderContainer(
+                                    viewModel = brightnessViewModel,
+                                    containerColors =
+                                        ContainerColors(
+                                            Color.Transparent,
+                                            ContainerColors.defaultContainerColor,
+                                        ),
+                                    modifier =
+                                        Modifier.thenIf(
+                                            layoutState.isTransitioningBetween(
+                                                Scenes.Shade,
+                                                Scenes.QuickSettings,
+                                            )
+                                        ) {
+                                            Modifier.gesturesDisabled()
+                                        },
+                                )
+                            }
+                        }
+                    },
                     tiles =
                         @Composable {
                             // Because the ShadeScene is always composed, we need to manually tell
@@ -392,10 +428,6 @@ private fun ContentScope.SingleShade(
                                 onStopOrDispose { listening = false }
                             }
                             Box {
-                                val qqsViewModel =
-                                    rememberViewModel(traceName = "shade_scene_qqs") {
-                                        viewModel.quickQuickSettingsViewModel.create()
-                                    }
                                 if (viewModel.isQsEnabled) {
                                     QuickQuickSettings(
                                         qqsViewModel,
@@ -476,6 +508,7 @@ private fun ContentScope.SingleShade(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun MediaAndQqsLayout(
+    brightness: @Composable () -> Unit,
     tiles: @Composable () -> Unit,
     media: @Composable () -> Unit,
     mediaInRow: Boolean,
@@ -483,17 +516,17 @@ private fun MediaAndQqsLayout(
 ) {
     val modifierAnimated =
         modifier.animateContentSizeNoClip(MaterialTheme.motionScheme.defaultSpatialSpec())
-    if (mediaInRow) {
-        Row(
-            modifier = modifierAnimated,
-            horizontalArrangement = spacedBy(dimensionResource(R.dimen.qs_tile_margin_vertical)),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(modifier = Modifier.weight(1f)) { tiles() }
-            Box(modifier = Modifier.weight(1f)) { media() }
-        }
-    } else {
-        Column(modifier = modifierAnimated, verticalArrangement = spacedBy(16.dp)) {
+    Column(modifier = modifierAnimated, verticalArrangement = spacedBy(16.dp)) {
+        brightness()
+        if (mediaInRow) {
+            Row(
+                horizontalArrangement = spacedBy(dimensionResource(R.dimen.qs_tile_margin_vertical)),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.weight(1f)) { tiles() }
+                Box(modifier = Modifier.weight(1f)) { media() }
+            }
+        } else {
             tiles()
             media()
         }

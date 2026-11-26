@@ -37,6 +37,7 @@ fun TransitionBuilder.shadeToQuickSettingsTransition(
     fractionRange(start = 0.43f, end = 1f - SHARED_TILE_PICKER_THRESHOLD) {
         fade(Elements.QuickSettingsContent)
     }
+    fractionRange(end = 0.43f) { fade(Elements.CollapsedBrightnessSlider) }
 
     anchoredTranslate(Elements.QuickSettingsContent, Elements.GridAnchor)
 

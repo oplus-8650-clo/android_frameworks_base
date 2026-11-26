@@ -16,9 +16,13 @@
 
 package com.android.systemui.qs.panels.ui.viewmodel
 
+import android.provider.Settings
+import android.view.Display
 import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import com.android.systemui.brightness.ui.viewmodel.BrightnessSliderViewModel
+import com.android.systemui.display.data.repository.DisplayTypeRepository
 import com.android.systemui.haptics.msdl.qs.TileHapticsViewModel
 import com.android.systemui.lifecycle.HydratedActivatable
 import com.android.systemui.media.controls.ui.controller.MediaHierarchyManager.Companion.LOCATION_QQS
@@ -29,9 +33,12 @@ import com.android.systemui.qs.panels.shared.model.SizedTileImpl
 import com.android.systemui.qs.panels.shared.model.splitInRowsSequence
 import com.android.systemui.qs.pipeline.domain.interactor.CurrentTilesInteractor
 import com.android.systemui.qs.pipeline.shared.TileSpec
+import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.shared.settings.data.repository.SecureSettingsRepository
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class QuickQuickSettingsViewModel
@@ -44,7 +51,18 @@ constructor(
     val squishinessViewModel: TileSquishinessViewModel,
     iconTilesViewModel: IconTilesViewModel,
     val tileHapticsViewModelFactory: TileHapticsViewModel.Factory,
+    val brightnessSliderViewModelFactory: BrightnessSliderViewModel.Factory,
+    secureSettingsRepository: SecureSettingsRepository,
+    @ShadeDisplayAware shadeDisplayTypeRepository: DisplayTypeRepository,
 ) : HydratedActivatable() {
+
+    val isBrightnessSliderVisible by
+        secureSettingsRepository
+            .boolSetting(Settings.Secure.QQS_BRIGHTNESS_SLIDER, defaultValue = true)
+            .combine(shadeDisplayTypeRepository.displayType) { enabled, displayType ->
+                enabled && displayType == Display.TYPE_INTERNAL
+            }
+            .hydratedStateOf(initialValue = false)
 
     private val qsColumnsViewModel = qsColumnsViewModelFactory.create(LOCATION_QQS, mediaUiBehavior)
     private val mediaInRowViewModel =
