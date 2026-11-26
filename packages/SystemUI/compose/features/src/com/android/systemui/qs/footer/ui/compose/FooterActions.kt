@@ -16,6 +16,7 @@
 
 package com.android.systemui.qs.footer.ui.compose
 
+import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -67,6 +68,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -472,12 +474,19 @@ private fun CircleExpandable(
     useModifierBasedImplementation: Boolean,
     content: @Composable (Expandable) -> Unit,
 ) {
+    val view = LocalView.current
     Expandable(
         color = color,
         contentColor = contentColor,
         borderStroke = borderStroke,
         shape = CircleShape,
-        onClick = onClick,
+        onClick =
+            onClick?.let { action ->
+                { expandable ->
+                    view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    action(expandable)
+                }
+            },
         interactionSource = interactionSource,
         modifier =
             modifier.borderOnFocus(

@@ -16,6 +16,7 @@
 
 package com.android.systemui.statusbar.notification.footer.ui.viewbinder
 
+import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.lifecycle.lifecycleScope
 import com.android.app.tracing.coroutines.launchTraced as launch
@@ -74,6 +75,11 @@ object FooterViewBinder {
         viewModel: FooterViewModel,
         clearAllNotifications: View.OnClickListener,
     ) = coroutineScope {
+        val onClickListener = View.OnClickListener { view ->
+            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            clearAllNotifications.onClick(view)
+        }
+
         launch {
             viewModel.clearAllButton.labelId.collect { textId ->
                 footer.setClearAllButtonText(textId)
@@ -89,7 +95,7 @@ object FooterViewBinder {
         launch {
             viewModel.clearAllButton.isVisible.collect { isVisible ->
                 if (isVisible.value) {
-                    footer.setClearAllButtonClickListener(clearAllNotifications)
+                    footer.setClearAllButtonClickListener(onClickListener)
                 } else {
                     // When the button isn't visible, it also shouldn't react to clicks. This is
                     // necessary because when the clear all button is not visible, it's actually
@@ -118,6 +124,7 @@ object FooterViewBinder {
                 cujType = InteractionJankMonitor.CUJ_SHADE_APP_LAUNCH_FROM_HISTORY_BUTTON
             )
         val onClickListener = { view: View ->
+            view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
             notificationActivityStarter.startSettingsIntent(view, settingsIntent)
         }
         footer.setSettingsButtonClickListener(onClickListener)
@@ -140,6 +147,7 @@ object FooterViewBinder {
                 cujType = InteractionJankMonitor.CUJ_SHADE_APP_LAUNCH_FROM_HISTORY_BUTTON
             )
         val onClickListener = { view: View ->
+            view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
             notificationActivityStarter.startSettingsIntent(view, settingsIntent)
         }
         footer.setHistoryButtonClickListener(onClickListener)
